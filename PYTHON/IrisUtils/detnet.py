@@ -13,7 +13,7 @@ import math
 import sys
 import pickle as pkl
 import utils
-
+import matplotlib.pyplot as plt
 
 
 """
@@ -51,7 +51,7 @@ L=30
 v_size = 1*(2*K)
 hl_size = 4*(2*K)
 frame_size = 4000 # number of frames (can be thought of as number of data points in ML terms)
-epochs = 100
+epochs = 500
 train_size = 3000  
 val_size = 500
 test_size = 500
@@ -111,13 +111,13 @@ def generate_data(B,K,N,snr_low,snr_high,H_R,H_I,x,y):
     x_ind = np.zeros([B,K,4])
     for i in range(B):
         for ii in range(K):
-            if x_R[i,ii]==-0.70710677 and x_I[i,ii] == -0.70710677:
+            if x_R[i,ii]==-0.7071067690849304 and x_I[i,ii] == -0.7071067690849304:
                 x_ind[i,ii,0] =  1
-            if x_R[i,ii]==-0.70710677 and x_I[i,ii] == 0.70710677:
+            if x_R[i,ii]==-0.7071067690849304 and x_I[i,ii] == 0.7071067690849304:
                 x_ind[i,ii,1] =  1
-            if x_R[i,ii]==0.70710677 and x_I[i,ii] == -0.70710677:
+            if x_R[i,ii]==0.7071067690849304 and x_I[i,ii] == -0.7071067690849304:
                 x_ind[i,ii,2] =  1
-            if x_R[i,ii]==0.70710677 and x_I[i,ii] == 0.70710677:
+            if x_R[i,ii]==0.7071067690849304 and x_I[i,ii] == 0.7071067690849304:
                 x_ind[i,ii,3] =  1
     for i in range(B):
         SNR = np.random.uniform(low=snr_low,high=snr_high)
@@ -151,13 +151,19 @@ def sign_layer(x,input_size,output_size,Layer_num):
     return y
 
 data_dim,data = utils.read_uplink_data(filepath)
-y_dim,y_ = utils.convert_data_dimensions(data)
+
+zero_subcarrier_indices,transmit_data_dim,x_ = utils.convert_transmit_dimensions_single(filepath,frame_size) 
+x_train = x_[:train_size]
+x_val = x_[train_size:train_size + val_size]
+x_test = x_[train_size + val_size:]
+
+y_dim,y_ = utils.reduce_data_single(data,zero_subcarrier_indices)
 y_train = y_[:train_size]
 y_val = y_[train_size:train_size + val_size]
 y_test = y_[train_size + val_size:]
 
 csi_dim,csi = utils.get_channel(filepath) 
-channel_dim,channel,H_R,H_I = utils.convert_channel_dimensions(csi)  
+channel_dim,channel,H_R,H_I = utils.convert_channel_dimensions_single(csi)  
 H_R_train = H_R[:train_size]
 H_R_val = H_R[train_size:train_size + val_size]
 H_R_test = H_R[train_size + val_size:]
@@ -165,10 +171,6 @@ H_I_train = H_I[:train_size]
 H_I_val = H_I[train_size:train_size + val_size]
 H_I_test = H_I[train_size + val_size:]
 
-transmit_data_dim,x_ = utils.convert_transmit_dimensions(filepath,frame_size) 
-x_train = x_[:train_size]
-x_val = x_[train_size:train_size + val_size]
-x_test = x_[train_size + val_size:]
 
 HY = tf.placeholder(tf.float32,shape=[None,2*K])
 X = tf.placeholder(tf.float32,shape=[None,2*K])
@@ -246,17 +248,22 @@ init_op=tf.global_variables_initializer()
 train_flag = True
 if train_flag:
     sess.run(init_op)
+    train_loss = []
+    val_loss = []
+    ser = []
     for i in range(epochs): #num of epochs
 
         batch_H, batch_HY, batch_HH,batch_X,SNR1, x_R, x_I, w_R, w_I,x_ind= generate_data(train_size,K,N,snr_low,snr_high,H_R_train,H_I_train,x_train,y_train)
         train_step.run(feed_dict={HY: batch_HY, HH: batch_HH, X: batch_X,X_IND:x_ind})
-
         if i % 10== 0 :
-            TOTAL_LOSS.eval(feed_dict={
+            print(TOTAL_LOSS.eval(feed_dict={
                 HY: batch_HY, HH: batch_HH, X: batch_X,X_IND:x_ind}
-            )
+            ))
+            train_loss.append(TOTAL_LOSS.eval(feed_dict={
+                HY: batch_HY, HH: batch_HH, X: batch_X,X_IND:x_ind}
+            ))
             batch_H, batch_HY, batch_HH,batch_X,SNR1, x_R, x_I, w_R, w_I,x_ind= generate_data(val_size,K,N,snr_low,snr_high,H_R_val,H_I_val,x_val,y_val)
-            results = sess.run([LOSS[L-1],BER[L-1],S1[L-1]], {HY: batch_HY, HH: batch_HH, X: batch_X,X_IND:x_ind})
+            results = sess.run([TOTAL_LOSS,BER[L-1],S1[L-1]], {HY: batch_HY, HH: batch_HH, X: batch_X,X_IND:x_ind})
             print_string = [i]+results[:2]
             print(' '.join('%s' % x for x in print_string))
             print("Actual value of x:")
@@ -264,7 +271,8 @@ if train_flag:
             print("Estimate of x at epoch {}: ".format(i))
             print(results[-1])
             sys.stderr.write(str(i)+' ')
-
+            val_loss.append(results[0])
+            ser.append(results[1])
 #saver.restore(sess, "./DetNet_HD_QPSK/QPSK_HD_model.ckpt")
 
 bers = np.zeros((num_snr,))
@@ -289,6 +297,22 @@ for j in range(num_snr):
 #     times[0][j] = np.mean(tmp_times[0])/test_batch_size
 #     ber_iter[:,j]=np.mean(tmp_ber_iter,1)
 # =============================================================================
+
+epochs = np.linspace(0,epochs,50)
+plt.plot(epochs,train_loss,label = 'Training Loss')
+plt.plot(epochs,val_loss,label = 'Validation Loss')
+plt.title('Train and Validation Loss vs Epochs')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.legend()
+plt.savefig('training_curve.jpg')
+plt.close()
+
+plt.plot(epochs,ser)
+plt.xlabel('Epochs')
+plt.ylabel('SER')
+plt.title('SER vs Epochs')
+plt.savefig('ser.jpg')
 
 print('snrdb_list')
 print(snrdb_list)
